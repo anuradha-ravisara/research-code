@@ -39,43 +39,63 @@
 from flask import Flask, request, jsonify
 import joblib
 import numpy as np
-from flask_cors import CORS
+import subprocess
 
-# Initialize Flask app and enable CORS
 app = Flask(__name__)
-CORS(app)  # Enable Cross-Origin requests
 
-# Load the pre-trained model
+# Load the saved model and scaler
 try:
-    model = joblib.load('health_model.pkl')
-    print("Model loaded successfully.")
+    model = joblib.load('health_risk_model.pkl')
+    scaler = joblib.load('scaler.pkl')
+    print("Model and scaler loaded successfully.")
 except Exception as e:
-    print(f"Error loading the model: {e}")
+    print(f"Error loading the model or scaler: {e}")
 
 @app.route('/predict', methods=['POST'])
 def predict():
     try:
+        # Extract data from the request
         data = request.get_json()
-        print("Received data:", data)
+        print("Received data:", data)  # Log received data
 
-        # Prepare only the 5 features (for example, exclude fetalHeartRate)
-        features = np.array([
-            [
-                data['age'], 
-                data['bloodPressureSystolic'], 
-                data['bloodPressureDiastolic'], 
-                data['bmi'], 
-                data['bloodSugarLevel']
-            ]
-        ])
-        print("Features for prediction:", features)
+        # Extract individual features from the request body
+        age = data.get('age', None)  # Use age if needed for other checks
+        bp_sys = data.get('bloodPressureSystolic')
+        bp_dia = data.get('bloodPressureDiastolic')
+        bmi = data.get('bmi')
+        blood_sugar = data.get('bloodSugarLevel')
+        fetal_hr = data.get('fetalHeartRate')
 
-        # Make the prediction
-        prediction = model.predict(features)
-        print("Prediction result:", prediction)
+        # Validate that all required fields are present
+        if None in [bp_sys, bp_dia, bmi, blood_sugar, fetal_hr]:
+            return jsonify({'error': 'All input fields are required.'}), 400
 
-        # Send the result back as JSON
-        return jsonify({'prediction': prediction[0]})
+        # Prepare the arguments for the Python script
+        args = [str(age), str(bp_sys), str(bp_dia), str(bmi), str(blood_sugar), str(fetal_hr)]
+
+        # Run the predict.py script with the required arguments
+        result = subprocess.run(['python', 'predict.py'] + args, capture_output=True, text=True)
+
+        # If an error occurred during script execution, capture it
+        if result.returncode != 0:
+            return jsonify({'error': 'Error during prediction.'}), 500
+
+        # Split the result into prediction and warnings
+        output_lines = result.stdout.splitlines()
+        prediction = output_lines[0]
+        warnings = output_lines[1:]
+
+        # Convert prediction to integer or float depending on model output
+        try:
+            prediction = int(prediction)  # Or float(prediction) depending on the model output type
+        except ValueError:
+            return jsonify({'error': 'Invalid prediction format.'}), 500
+
+        # Send the prediction and warnings in the response
+        return jsonify({
+            'prediction': prediction,
+            'warnings': warnings if warnings else 'No warnings'
+        })
 
     except Exception as e:
         print(f"Error during prediction: {e}")
@@ -83,6 +103,7 @@ def predict():
 
 if __name__ == '__main__':
     app.run(port=5001)
+
 
 
 

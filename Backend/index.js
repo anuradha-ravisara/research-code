@@ -1168,10 +1168,11 @@ require('dotenv').config(); // Load environment variables
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
-const { RekognitionClient, DetectTextCommand } = require('@aws-sdk/client-rekognition');
 const mongoose = require('mongoose');
 const fs = require('fs');
-const { PythonShell } = require('python-shell'); 
+const { RekognitionClient, DetectTextCommand } = require('@aws-sdk/client-rekognition');
+const { PythonShell } = require('python-shell');
+const bcrypt = require('bcrypt');
 
 const app = express();
 const port = 5000;
@@ -1185,6 +1186,47 @@ mongoose.connect(
   "mongodb+srv://admin:7IejOoiRe6wmbr57@mmcaredb.rrvnwxo.mongodb.net/Node-API?retryWrites=true&w=majority&appName=MmCareDB"
 ).then(() => console.log("Connected to MongoDB database!"))
   .catch((error) => console.error("Connection to MongoDB failed!", error));
+
+// Define schema for user registration data
+const userRegistrationSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+  address: { type: String, required: true },
+  createdAt: { type: Date, default: Date.now }
+});
+
+const UserRegistration = mongoose.model('UserRegistration', userRegistrationSchema);
+
+// User registration route
+app.post('/register', async (req, res) => {
+  const { name, email, password, address } = req.body;
+
+  if (!name || !email || !password || !address) {
+    return res.status(400).json({ error: 'All fields are required.' });
+  }
+
+  try {
+    // Encrypt password
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Save user data to MongoDB
+    const newUser = new UserRegistration({
+      name,
+      email,
+      password: hashedPassword, // Save hashed password
+      address,
+    });
+
+    await newUser.save();
+
+    res.status(201).json({ message: 'User registered successfully!' });
+  } catch (error) {
+    res.status(500).json({ error: 'Registration failed!' });
+  }
+});
+
+
 
 // Define schema for extracted health data
 const healthRecordSchema = new mongoose.Schema({
@@ -1265,65 +1307,8 @@ app.post('/analyze-image', upload.single('image'), async (req, res) => {
 });
 
 // Prediction route
-
-
-// app.post('/predict', (req, res) => {
-//   const {
-//     age,
-//     bloodPressureSystolic,
-//     bloodPressureDiastolic,
-//     bmi,
-//     bloodSugarLevel,
-//     fetalHeartRate,
-//   } = req.body;
-
-//   console.log('Received Prediction Request:', req.body); // Log received request
-
-//   // Check if any required field is missing or invalid
-//   if (
-//     !age || !bloodPressureSystolic || !bloodPressureDiastolic || 
-//     !bmi || !bloodSugarLevel || !fetalHeartRate
-//   ) {
-//     console.error('Invalid input data received:', req.body);
-//     return res.status(400).json({ error: 'All input fields are required and must be valid.' });
-//   }
-
-//   const options = {
-//     mode: 'text',
-//     pythonOptions: ['-u'], // Pass options to Python script
-//     args: [
-//       age,
-//       bloodPressureSystolic,
-//       bloodPressureDiastolic,
-//       bmi,
-//       bloodSugarLevel,
-//       fetalHeartRate,
-//     ],
-//   };
-
-//   PythonShell.run('predict.py', options, (err, results) => {
-//     if (err) {
-//       console.error('Prediction Error:', err);
-//       return res.status(500).json({ error: 'Prediction failed.' });
-//     }
-  
-//     console.log('Prediction Results:', results);
-  
-//     const prediction = results[0]?.trim() || 'No prediction';
-//     const warnings = results.slice(1).map((warning) => warning.trim());
-  
-//     res.json({
-//       message: 'Prediction successful',
-//       prediction,
-//       warnings: warnings.length > 0 ? warnings : 'No warnings',
-//     });
-//   });  
-// });
-
-
 app.post('/predict', (req, res) => {
   const {
-    age,
     bloodPressureSystolic,
     bloodPressureDiastolic,
     bmi,
@@ -1347,7 +1332,6 @@ app.post('/predict', (req, res) => {
     mode: 'text',
     pythonOptions: ['-u'], // Ensures unbuffered output
     args: [
-      age,
       bloodPressureSystolic,
       bloodPressureDiastolic,
       bmi,
@@ -1377,11 +1361,7 @@ app.post('/predict', (req, res) => {
       warnings: warnings.length > 0 ? warnings : 'No warnings',
     });
   });
-  
 });
 
-
+// Start the server
 app.listen(port, () => console.log(`Server running at http://localhost:${port}`));
-
-
-
