@@ -1164,13 +1164,13 @@
 // });
 
 
+
 require('dotenv').config(); // Load environment variables
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
 const mongoose = require('mongoose');
 const fs = require('fs');
-const { RekognitionClient, DetectTextCommand } = require('@aws-sdk/client-rekognition');
 const { PythonShell } = require('python-shell');
 const bcrypt = require('bcrypt');
 
@@ -1226,83 +1226,32 @@ app.post('/register', async (req, res) => {
   }
 });
 
+// User login route
+app.post('/login', async (req, res) => {
+  const { email, password } = req.body;
 
-
-// Define schema for extracted health data
-const healthRecordSchema = new mongoose.Schema({
-  fullName: String,
-  age: Number,
-  bloodPressure: String,
-  bmi: Number,
-  bloodSugarLevel: Number,
-  fetalHeartRate: Number,
-  createdAt: { type: Date, default: Date.now }
-});
-
-const HealthRecord = mongoose.model('HealthRecord', healthRecordSchema);
-
-// AWS Rekognition client configuration
-const client = new RekognitionClient({
-  region: process.env.AWS_REGION,
-  credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-  },
-});
-
-// Multer setup for file uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, 'uploads/'),
-  filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname),
-});
-const upload = multer({ storage });
-
-// Helper function to extract fields
-function extractField(text, label, type = 'string') {
-  const regex = new RegExp(`${label}\\s*[:\\{]?\\s*([A-Za-z0-9/\\-. ]+)`, 'i');
-  const match = text.match(regex);
-  let value = match ? match[1].trim() : '';
-  return type === 'number' ? parseFloat(value) || NaN : value;
-}
-
-// Image analysis route
-app.post('/analyze-image', upload.single('image'), async (req, res) => {
-  if (!req.file) return res.status(400).send('No image uploaded.');
-
-  const imageBytes = fs.readFileSync(req.file.path);
-  const params = { Image: { Bytes: imageBytes } };
-  const command = new DetectTextCommand(params);
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password are required.' });
+  }
 
   try {
-    const data = await client.send(command);
-    const extractedTexts = data.TextDetections.map((d) => d.DetectedText).join(', ');
+    // Check if the user exists in the database
+    const user = await UserRegistration.findOne({ email });
 
-    console.log('Extracted Text:', extractedTexts);
+    if (!user) {
+      return res.status(400).json({ error: 'User not found.' });
+    }
 
-    const fullName = extractField(extractedTexts, 'Full Name');
-    const age = extractField(extractedTexts, 'Age', 'number');
-    const bloodPressure = extractField(extractedTexts, 'Blood Pressure');
-    const bmi = extractField(extractedTexts, 'Body Mass Index \\(BMI\\)', 'number');
-    const bloodSugarLevel = extractField(extractedTexts, 'Blood Sugar Level', 'number');
-    const fetalHeartRate = extractField(extractedTexts, 'Fetal Heart Rate', 'number');
+    // Compare the provided password with the hashed password in the database
+    const isMatch = await bcrypt.compare(password, user.password);
 
-    const newHealthRecord = new HealthRecord({
-      fullName,
-      age,
-      bloodPressure,
-      bmi,
-      bloodSugarLevel,
-      fetalHeartRate
-    });
+    if (!isMatch) {
+      return res.status(400).json({ error: 'Invalid password.' });
+    }
 
-    await newHealthRecord.save();
-    console.log('Data saved to MongoDB.');
-
-    res.json({ message: 'Data saved successfully', extractedData: newHealthRecord });
-
+    res.json({ message: 'Login successful', user: user.name });
   } catch (error) {
-    console.error('Error processing the image:', error);
-    res.status(500).json({ error: 'Image processing failed.' });
+    res.status(500).json({ error: 'Login failed. Please try again later.' });
   }
 });
 
@@ -1320,7 +1269,7 @@ app.post('/predict', (req, res) => {
 
   // Input validation to ensure no missing or NaN values
   if (
-    [age, bloodPressureSystolic, bloodPressureDiastolic, bmi, bloodSugarLevel, fetalHeartRate].some(
+    [bloodPressureSystolic, bloodPressureDiastolic, bmi, bloodSugarLevel, fetalHeartRate].some(
       (val) => isNaN(val) || val == null
     )
   ) {
@@ -1346,22 +1295,27 @@ app.post('/predict', (req, res) => {
       console.error('Prediction Error:', err); // Log any errors
       return res.status(500).json({ error: 'Prediction failed.' });
     }
-  
+
     console.log('Raw Prediction Results:', results); // Log raw results
-  
-    const prediction = results[0]?.trim();
-    const warnings = results.slice(1).map((warning) => warning.trim());
-  
+
+    const prediction = results[0]?.trim(); // Capture the prediction (the first line of output)
+    const warnings = results.slice(1).map((warning) => warning.trim()); // Capture warnings (subsequent lines)
+
     console.log('Parsed Prediction:', prediction); // Log parsed prediction
     console.log('Parsed Warnings:', warnings); // Log parsed warnings
-  
+
     res.json({
       message: 'Prediction successful',
-      prediction,
+      prediction: prediction,
       warnings: warnings.length > 0 ? warnings : 'No warnings',
     });
   });
 });
 
+
 // Start the server
-app.listen(port, () => console.log(`Server running at http://localhost:${port}`));
+app.listen(port, () => {
+  console.log(`Server running on http://localhost:${port}`);
+});
+
+

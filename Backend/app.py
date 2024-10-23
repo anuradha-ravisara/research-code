@@ -59,29 +59,34 @@ def predict():
         print("Received data:", data)  # Log received data
 
         # Extract individual features from the request body
-        age = data.get('age', None)  # Use age if needed for other checks
         bp_sys = data.get('bloodPressureSystolic')
         bp_dia = data.get('bloodPressureDiastolic')
         bmi = data.get('bmi')
         blood_sugar = data.get('bloodSugarLevel')
         fetal_hr = data.get('fetalHeartRate')
 
+        # Log the individual values for better debugging
+        print(f"Sys: {bp_sys}, Dia: {bp_dia}, BMI: {bmi}, Blood Sugar: {blood_sugar}, Fetal HR: {fetal_hr}")
+
         # Validate that all required fields are present
         if None in [bp_sys, bp_dia, bmi, blood_sugar, fetal_hr]:
             return jsonify({'error': 'All input fields are required.'}), 400
 
         # Prepare the arguments for the Python script
-        args = [str(age), str(bp_sys), str(bp_dia), str(bmi), str(blood_sugar), str(fetal_hr)]
+        args = [str(bp_sys), str(bp_dia), str(bmi), str(blood_sugar), str(fetal_hr)]
 
         # Run the predict.py script with the required arguments
         result = subprocess.run(['python', 'predict.py'] + args, capture_output=True, text=True)
 
         # If an error occurred during script execution, capture it
         if result.returncode != 0:
+            print(f"Error during prediction script execution: {result.stderr}")  # Log error message
             return jsonify({'error': 'Error during prediction.'}), 500
 
         # Split the result into prediction and warnings
         output_lines = result.stdout.splitlines()
+        print(f"Script Output: {output_lines}")  # Log the output from predict.py
+
         prediction = output_lines[0]
         warnings = output_lines[1:]
 
@@ -89,6 +94,7 @@ def predict():
         try:
             prediction = int(prediction)  # Or float(prediction) depending on the model output type
         except ValueError:
+            print(f"Invalid prediction format: {prediction}")  # Log the invalid format
             return jsonify({'error': 'Invalid prediction format.'}), 500
 
         # Send the prediction and warnings in the response
@@ -103,8 +109,6 @@ def predict():
 
 if __name__ == '__main__':
     app.run(port=5001)
-
-
 
 
 
