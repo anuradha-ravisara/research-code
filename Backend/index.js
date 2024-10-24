@@ -1171,15 +1171,19 @@ const cors = require('cors');
 const multer = require('multer');
 const mongoose = require('mongoose');
 const fs = require('fs');
+const { RekognitionClient, DetectTextCommand } = require('@aws-sdk/client-rekognition'); // AWS SDK
 const { PythonShell } = require('python-shell');
 const bcrypt = require('bcrypt');
 
 const app = express();
 const port = 5000;
 
-// Enable CORS for all requests
-app.use(cors({ origin: 'http://localhost:3000', methods: ['GET', 'POST'] }));
-app.use(express.json()); // Middleware to parse JSON requests
+// Enable CORS for all routes
+app.use(cors({
+  origin: 'http://localhost:3000', // Allow requests only from this origin
+  methods: ['GET', 'POST'],        // Allow GET and POST requests
+  allowedHeaders: ['Content-Type', 'Authorization'], // Allow certain headers
+}));
 
 // MongoDB connection
 mongoose.connect(
@@ -1255,6 +1259,92 @@ app.post('/login', async (req, res) => {
   }
 });
 
+// Configure multer for file uploads
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, 'uploads/');
+  },
+  filename: (req, file, cb) => {
+    cb(null, Date.now() + '-' + file.originalname);
+  }
+});
+const upload = multer({ storage });
+
+// AWS Rekognition client configuration
+const client = new RekognitionClient({
+  region: process.env.AWS_REGION,
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+  },
+});
+
+// Helper function to clean extracted text and remove duplicates
+function cleanExtractedText(textArray) {
+  const uniqueTexts = new Set(textArray); // Use a Set to remove duplicates
+  return Array.from(uniqueTexts).filter(text => text && text.trim() !== ''); // Remove empty or whitespace-only strings
+}
+
+// Helper function to extract fields from the extracted text
+function extractField(text, label, type = 'string') {
+  const regex = new RegExp(`${label}\\s*[:\\{]?\\s*([A-Za-z0-9/\\-. ]+)`, 'i');
+  const match = text.match(regex);
+  let value = match ? match[1].trim() : '';
+  return type === 'number' ? parseFloat(value) || NaN : value;
+}
+
+// Analyze image route
+app.post('/analyze-image', upload.single('image'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).send('No image uploaded.');
+  }
+
+  const imagePath = req.file.path;
+  const imageBytes = fs.readFileSync(imagePath);
+  const params = { Image: { Bytes: imageBytes } };
+  const command = new DetectTextCommand(params);
+
+  try {
+    // Call AWS Rekognition to detect text
+    const data = await client.send(command);
+
+    let extractedTexts = data.TextDetections.map((detection) => detection.DetectedText);
+    const cleanedTexts = cleanExtractedText(extractedTexts); // Clean and remove duplicates
+    const extractedText = cleanedTexts.join(', ');
+
+    console.log('Cleaned Extracted Text:', extractedText);
+
+    // Extract relevant fields with proper error handling
+    const fullName = extractField(extractedText, 'Full Name') || 'Unknown';
+    const age = parseFloat(extractField(extractedText, 'Age', 'number'));
+    const bloodPressureString = extractField(extractedText, 'Blood Pressure', 'string');
+    
+    let sys = null, dia = null;
+    if (bloodPressureString && bloodPressureString.includes('/')) {
+      [sys, dia] = bloodPressureString.split('/').map((val) => parseFloat(val.trim()));
+    }
+
+    const bmi = parseFloat(extractField(extractedText, 'Body Mass Index \\(BMI\\)', 'number'));
+    const bloodSugarLevel = parseFloat(extractField(extractedText, 'Blood Sugar Level', 'number'));
+    const fetalHeartRate = parseFloat(extractField(extractedText, 'Fetal Heart Rate', 'number'));
+
+    // Create new health record
+    const newHealthRecord = {
+      fullName,
+      age,
+      bloodPressure: `${sys || ''}/${dia || ''} mm Hg`,
+      bmi,
+      bloodSugarLevel,
+      fetalHeartRate,
+    };
+
+    res.json({ message: 'Data saved successfully', extractedData: newHealthRecord });
+  } catch (error) {
+    console.error('Error analyzing image:', error);
+    res.status(500).send('Error analyzing image.');
+  }
+});
+
 // Prediction route
 app.post('/predict', (req, res) => {
   const {
@@ -1267,7 +1357,6 @@ app.post('/predict', (req, res) => {
 
   console.log('Received Prediction Request:', req.body);
 
-  // Input validation to ensure no missing or NaN values
   if (
     [bloodPressureSystolic, bloodPressureDiastolic, bmi, bloodSugarLevel, fetalHeartRate].some(
       (val) => isNaN(val) || val == null
@@ -1279,7 +1368,7 @@ app.post('/predict', (req, res) => {
 
   const options = {
     mode: 'text',
-    pythonOptions: ['-u'], // Ensures unbuffered output
+    pythonOptions: ['-u'],
     args: [
       bloodPressureSystolic,
       bloodPressureDiastolic,
@@ -1289,25 +1378,40 @@ app.post('/predict', (req, res) => {
     ],
   };
 
-  // Run the Python script using PythonShell
   PythonShell.run('predict.py', options, (err, results) => {
     if (err) {
-      console.error('Prediction Error:', err); // Log any errors
+      console.error('Prediction Error:', err);
       return res.status(500).json({ error: 'Prediction failed.' });
     }
 
-    console.log('Raw Prediction Results:', results); // Log raw results
+    console.log('Raw Prediction Results:', results);
 
-    const prediction = results[0]?.trim(); // Capture the prediction (the first line of output)
-    const warnings = results.slice(1).map((warning) => warning.trim()); // Capture warnings (subsequent lines)
+    const prediction = results[0]?.trim();
+    const warnings = [];
+    const suggestions = [];
 
-    console.log('Parsed Prediction:', prediction); // Log parsed prediction
-    console.log('Parsed Warnings:', warnings); // Log parsed warnings
+    // Parse the output for warnings and suggestions
+    let isWarning = true;
+    results.slice(1).forEach((line) => {
+      const trimmedLine = line.trim();
+      if (trimmedLine.includes('Warning')) {
+        isWarning = true;
+      } else if (trimmedLine.includes('Suggestion')) {
+        isWarning = false;
+      }
+
+      if (isWarning) {
+        warnings.push(trimmedLine);
+      } else {
+        suggestions.push(trimmedLine);
+      }
+    });
 
     res.json({
       message: 'Prediction successful',
       prediction: prediction,
       warnings: warnings.length > 0 ? warnings : 'No warnings',
+      suggestions: suggestions.length > 0 ? suggestions : 'No suggestions',
     });
   });
 });
@@ -1317,5 +1421,8 @@ app.post('/predict', (req, res) => {
 app.listen(port, () => {
   console.log(`Server running on http://localhost:${port}`);
 });
+
+
+
 
 
